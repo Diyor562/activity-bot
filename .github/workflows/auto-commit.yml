@@ -2,7 +2,7 @@ name: Auto commit
 
 on:
   schedule:
-    - cron: "7,37 * * * *"   # каждые 30 минут
+      - cron: "5,20,35,50 * * * *"
   workflow_dispatch:          # ручной запуск для теста
 
 permissions:
