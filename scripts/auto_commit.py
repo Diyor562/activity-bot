@@ -11,7 +11,7 @@ MIN_COMMITS = 3
 MAX_COMMITS = 5
 START_HOUR_UTC = 4    # 09:00 по Ташкенту (UTC+5)
 END_HOUR_UTC = 18     # 23:00 по Ташкенту
-SALT = os.environ.get("PLAN_SALT", "change-me")  # делает план непредсказуемым
+SALT = os.environ.get("PLAN_SALT") or "change-me"
 # --------------------------------
 
 ACTIVITY_DIR = Path("activity")
@@ -26,17 +26,16 @@ WORDS = ["alpha", "bravo", "cedar", "delta", "ember", "flint", "grove",
          "harbor", "iris", "juniper", "kepler", "lumen", "maple", "nova"]
 
 
-def run(*args):
-    subprocess.run(args, check=True)
+def run(*args, env=None):
+    subprocess.run(args, check=True, env=env)
 
 
 def build_plan(today: str):
-    """Детерминированный план дня: кол-во коммитов и минуты суток (UTC)."""
+    """Детерминированный план дня: минуты суток (UTC) для каждого коммита."""
     rng = random.Random(f"{SALT}-{today}")
     count = rng.randint(MIN_COMMITS, MAX_COMMITS)
     pool = range(START_HOUR_UTC * 60, END_HOUR_UTC * 60)
-    slots = sorted(rng.sample(pool, count))
-    return slots
+    return sorted(rng.sample(pool, count))
 
 
 def load_state(today: str):
@@ -50,15 +49,15 @@ def load_state(today: str):
     return {"date": today, "done": 0}
 
 
-def make_real_change(now: dt.datetime, state: dict):
+def make_real_change(when: dt.datetime):
     """Реально меняет файлы: лог за месяц + json со статистикой."""
     ACTIVITY_DIR.mkdir(exist_ok=True)
 
-    log = ACTIVITY_DIR / f"{now:%Y-%m}.md"
+    log = ACTIVITY_DIR / f"{when:%Y-%m}.md"
     if not log.exists():
-        log.write_text(f"# Activity log {now:%Y-%m}\n\n")
+        log.write_text(f"# Activity log {when:%Y-%m}\n\n")
     entry = (
-        f"- {now:%Y-%m-%d %H:%M:%S} UTC | "
+        f"- {when:%Y-%m-%d %H:%M:%S} UTC | "
         f"{random.choice(WORDS)}-{random.randint(1000, 9999)} | "
         f"value={random.randint(1, 10**6)}\n"
     )
@@ -73,7 +72,7 @@ def make_real_change(now: dt.datetime, state: dict):
         except json.JSONDecodeError:
             pass
     data["total_updates"] = data.get("total_updates", 0) + 1
-    data["last_update"] = now.isoformat()
+    data["last_update"] = when.isoformat()
     data["random_seed"] = random.randint(0, 10**9)
     stats.write_text(json.dumps(data, indent=2))
 
@@ -86,23 +85,34 @@ def main():
     slots = build_plan(today)
     state = load_state(today)
     due = sum(1 for s in slots if s <= minute_of_day)
+    todo = due - state["done"]
 
     print(f"План на {today} (UTC): "
           f"{[f'{s // 60:02d}:{s % 60:02d}' for s in slots]}")
-    print(f"Выполнено: {state['done']}, должно быть к сейчас: {due}")
+    print(f"Выполнено: {state['done']}, должно быть сейчас: {due}")
 
-    if state["done"] >= due:
+    if todo <= 0:
         print("Пока коммитить не нужно.")
         return
 
-    state["done"] += 1
-    make_real_change(now, state)
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    base = dt.datetime.combine(now.date(), dt.time(0, 0), tzinfo=dt.timezone.utc)
+    for _ in range(todo):
+        slot = slots[state["done"]]
+        when = base + dt.timedelta(minutes=slot, seconds=random.randint(0, 59))
+        when = min(when, now)
 
-    run("git", "add", "-A")
-    run("git", "commit", "-m", random.choice(MESSAGES))
+        make_real_change(when)
+        state["done"] += 1
+        STATE_FILE.write_text(json.dumps(state, indent=2))
+
+        env = os.environ.copy()
+        env["GIT_AUTHOR_DATE"] = when.isoformat()
+        env["GIT_COMMITTER_DATE"] = when.isoformat()
+        run("git", "add", "-A")
+        run("git", "commit", "-m", random.choice(MESSAGES), env=env)
+
     run("git", "push")
-    print("Коммит отправлен.")
+    print(f"Отправлено коммитов: {todo}")
 
 
 if __name__ == "__main__":
